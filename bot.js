@@ -3,10 +3,10 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { google } = require('googleapis');
 const { JWT } = require('google-auth-library');
 const qrcode = require('qrcode-terminal');
-const creds = require('./credentialsSetembro.json');
+const creds = require('./credentialsMaio.json');
 
 // === CONFIG ===
-const SPREADSHEET_ID = '18O1hTl3chbccGzv271OoQiki2tCeT8mEbSF6IhHC5_w';
+const SPREADSHEET_ID = '11INgMPzX0_xBxhWS1OoTlwrNJBN6hUr85AFufIKB7xw';
 const RANGE = 'numeros!A2:A'; // ajuste para o nome EXATO da sua aba
 const IMAGE_PATH = path.resolve(__dirname, 'images', 'foto.jpeg');
 let mensagem;
@@ -22,6 +22,10 @@ try {
 
 const client = new Client({
   authStrategy: new LocalAuth(),
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/web.js'
+  },
   puppeteer: {
     headless: true,
     args: [
@@ -43,8 +47,10 @@ client.on('auth_failure', m => console.error('❌ Falha de autenticação:', m))
 client.on('disconnected', r => console.warn('⚠️ Desconectado:', r));
 client.on('change_state', s => console.log('ℹ️ Estado:', s));
 
-client.on('ready', async () => {
-  console.log('✅ WhatsApp conectado. Lendo planilha...');
+client.once('ready', async () => {
+  console.log('✅ WhatsApp conectado. Aguardando inicialização...');
+  await sleep(3000); // aguarda módulos internos do WhatsApp Web carregarem
+  console.log('📡 Lendo planilha...');
 
   let numeros = [];
   try {
@@ -83,7 +89,7 @@ client.on('ready', async () => {
 
     try {
       await client.sendMessage(numberId._serialized, media, { caption: mensagem });
-      console.log(`✅ Enviado para ${numberId.user}`);
+      console.log(`✅ Enviado para ${withDDI}`);
       await sleep(1500); // pausa mais segura
     } catch (err) {
       console.error(`❌ Erro ao enviar para ${withDDI}: ${err?.message || err}`);

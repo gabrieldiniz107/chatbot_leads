@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { google } = require('googleapis');
 const { JWT } = require('google-auth-library');
@@ -8,7 +9,8 @@ const creds = require('./credentialsMaio.json');
 // === CONFIG ===
 const SPREADSHEET_ID = '11INgMPzX0_xBxhWS1OoTlwrNJBN6hUr85AFufIKB7xw';
 const RANGE = 'numeros!A2:A'; // ajuste para o nome EXATO da sua aba
-const IMAGE_PATH = path.resolve(__dirname, 'images', 'foto.jpeg');
+const IMAGES_DIR = path.resolve(__dirname, 'images');
+const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
 let mensagem;
 try {
   mensagem = require('./mensagem');
@@ -62,8 +64,19 @@ client.once('ready', async () => {
 
   console.log(`📋 ${numeros.length} números obtidos.`);
 
-  // Verifica existência do arquivo de mídia
-  const media = MessageMedia.fromFilePath(IMAGE_PATH);
+  // Verifica se há imagens na pasta images/
+  const imagePaths = findImages(IMAGES_DIR);
+  let media = null;
+
+  if (imagePaths.length > 0) {
+    media = MessageMedia.fromFilePath(imagePaths[0]);
+    console.log(`🖼️ Imagem encontrada: ${path.basename(imagePaths[0])}`);
+    if (imagePaths.length > 1) {
+      console.log(`ℹ️ ${imagePaths.length} imagens encontradas, usando a primeira: ${path.basename(imagePaths[0])}`);
+    }
+  } else {
+    console.log('📝 Nenhuma imagem encontrada em images/. Enviando somente texto.');
+  }
 
   for (const raw of numeros) {
     const limpo = (raw || '').toString().replace(/\D/g, '');
@@ -88,7 +101,11 @@ client.once('ready', async () => {
     }
 
     try {
-      await client.sendMessage(numberId._serialized, media, { caption: mensagem });
+      if (media) {
+        await client.sendMessage(numberId._serialized, media, { caption: mensagem });
+      } else {
+        await client.sendMessage(numberId._serialized, mensagem);
+      }
       console.log(`✅ Enviado para ${withDDI}`);
       await sleep(1500); // pausa mais segura
     } catch (err) {
@@ -118,6 +135,17 @@ async function fetchNumeros() {
   return (res.data.values || [])
     .map(row => (row[0] || '').toString().trim())
     .filter(v => !!v);
+}
+
+function findImages(dir) {
+  try {
+    const files = fs.readdirSync(dir);
+    return files
+      .filter(f => IMAGE_EXTENSIONS.includes(path.extname(f).toLowerCase()))
+      .map(f => path.join(dir, f));
+  } catch {
+    return [];
+  }
 }
 
 function sleep(ms) {

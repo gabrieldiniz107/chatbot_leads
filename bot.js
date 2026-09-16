@@ -8,14 +8,14 @@ const creds = require('./credentialsMaio.json');
 
 // === CONFIG ===
 const SPREADSHEET_ID = '11INgMPzX0_xBxhWS1OoTlwrNJBN6hUr85AFufIKB7xw';
-const RANGE = 'numeros!A2:A'; // ajuste para o nome EXATO da sua aba
+const RANGE = 'numeros!A2:C'; // coluna A = nome, coluna B = número 1, coluna C = número 2 (opcional). ajuste para o nome EXATO da sua aba
 const IMAGES_DIR = path.resolve(__dirname, 'images');
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
 let mensagem;
 try {
   mensagem = require('./mensagem');
-  if (typeof mensagem !== 'string' || !mensagem.trim()) {
-    throw new Error('mensagem exportada não é uma string válida.');
+  if (typeof mensagem !== 'function') {
+    throw new Error('mensagem exportada não é uma função válida (esperado: (nome) => string).');
   }
 } catch (err) {
   console.error('❌ Não foi possível carregar a mensagem de ./mensagem.js:', err?.message || err);
@@ -24,10 +24,6 @@ try {
 
 const client = new Client({
   authStrategy: new LocalAuth(),
-  webVersionCache: {
-    type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/web.js'
-  },
   puppeteer: {
     headless: true,
     args: [
@@ -48,21 +44,23 @@ client.on('qr', qr => {
 client.on('auth_failure', m => console.error('❌ Falha de autenticação:', m));
 client.on('disconnected', r => console.warn('⚠️ Desconectado:', r));
 client.on('change_state', s => console.log('ℹ️ Estado:', s));
+client.on('loading_screen', (percent, msg) => console.log(`⏳ Carregando ${percent}% - ${msg}`));
+client.on('authenticated', () => console.log('🔐 Autenticado, sincronizando...'));
 
 client.once('ready', async () => {
   console.log('✅ WhatsApp conectado. Aguardando inicialização...');
-  await sleep(3000); // aguarda módulos internos do WhatsApp Web carregarem
+  await sleep(5000); // aguarda módulos internos do WhatsApp Web carregarem
   console.log('📡 Lendo planilha...');
 
-  let numeros = [];
+  let contatos = [];
   try {
-    numeros = await fetchNumeros();
+    contatos = await fetchContatos();
   } catch (e) {
     console.error('❌ Erro ao ler a planilha:', e?.message || e);
     process.exit(1);
   }
 
-  console.log(`📋 ${numeros.length} números obtidos.`);
+  console.log(`📋 ${contatos.length} contatos obtidos.`);
 
   // Verifica se há imagens na pasta images/
   const imagePaths = findImages(IMAGES_DIR);
@@ -78,39 +76,46 @@ client.once('ready', async () => {
     console.log('📝 Nenhuma imagem encontrada em images/. Enviando somente texto.');
   }
 
-  for (const raw of numeros) {
-    const limpo = (raw || '').toString().replace(/\D/g, '');
-    if (!limpo) continue;
+  for (const contato of contatos) {
+    const nome = (contato.nome || '').toString().trim() || 'cliente';
+    const textoMensagem = mensagem(nome);
 
-    // Normaliza: garante DDI 55
-    const withDDI = limpo.startsWith('55') ? limpo : `55${limpo}`;
+    for (const raw of contato.numeros) {
+      const limpo = (raw || '').toString().replace(/\D/g, '');
+      if (!limpo) continue;
 
-    let numberId = null;
-    try {
-      numberId = await client.getNumberId(withDDI); // método mais estável
-    } catch (e) {
-      console.warn(`⚠️ Falha ao consultar ${withDDI}: ${e?.message || e}`);
-      await sleep(1000);
-      continue;
-    }
+      // Normaliza: garante DDI 55
+      const withDDI = limpo.startsWith('55') ? limpo : `55${limpo}`;
 
-    if (!numberId) {
-      console.warn(`❌ ${withDDI} não possui WhatsApp. Pulando...`);
-      await sleep(1000);
-      continue;
-    }
-
-    try {
-      if (media) {
-        await client.sendMessage(numberId._serialized, media, { caption: mensagem });
-      } else {
-        await client.sendMessage(numberId._serialized, mensagem);
+      let numberId = null;
+      for (let tentativa = 0; tentativa < 3; tentativa++) {
+        try {
+          numberId = await client.getNumberId(withDDI);
+          break;
+        } catch (e) {
+          console.warn(`⚠️ Falha ao consultar ${withDDI} (tentativa ${tentativa + 1}/3): ${e?.message || e}`);
+          await sleep(2000 * (tentativa + 1));
+        }
       }
-      console.log(`✅ Enviado para ${withDDI}`);
-      await sleep(1500); // pausa mais segura
-    } catch (err) {
-      console.error(`❌ Erro ao enviar para ${withDDI}: ${err?.message || err}`);
-      await sleep(1500);
+
+      if (!numberId) {
+        console.warn(`❌ ${withDDI} não possui WhatsApp. Pulando...`);
+        await sleep(1000);
+        continue;
+      }
+
+      try {
+        if (media) {
+          await client.sendMessage(numberId._serialized, media, { caption: textoMensagem });
+        } else {
+          await client.sendMessage(numberId._serialized, textoMensagem);
+        }
+        console.log(`✅ Enviado para ${nome} (${withDDI})`);
+        await sleep(1500); // pausa mais segura
+      } catch (err) {
+        console.error(`❌ Erro ao enviar para ${withDDI}: ${err?.message || err}`);
+        await sleep(1500);
+      }
     }
   }
 
@@ -118,7 +123,7 @@ client.once('ready', async () => {
   process.exit(0);
 });
 
-async function fetchNumeros() {
+async function fetchContatos() {
   const auth = new JWT({
     email: creds.client_email,
     key: creds.private_key.replace(/\\n/g, '\n'),
@@ -131,10 +136,15 @@ async function fetchNumeros() {
     range: RANGE
   });
 
-  // Retorna a primeira coluna com trim, ignorando vazios
+  // Coluna A = nome, colunas B e C = números (C é opcional). Ignora linhas sem nenhum número.
   return (res.data.values || [])
-    .map(row => (row[0] || '').toString().trim())
-    .filter(v => !!v);
+    .map(row => ({
+      nome: (row[0] || '').toString().trim(),
+      numeros: [row[1], row[2]]
+        .map(v => (v || '').toString().trim())
+        .filter(v => !!v)
+    }))
+    .filter(c => c.numeros.length > 0);
 }
 
 function findImages(dir) {
